@@ -49,6 +49,11 @@ function toISO(raw:string) {
   if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) { const [d,m,y]=s.split('.'); return `${y}-${m}-${d}` }
   return s
 }
+// Normalized city comparison — tolerant of whitespace/casing differences
+// that could otherwise make one city silently mismatch while others work.
+function cityEq(a:string, b:string) {
+  return (a||'').trim().toLowerCase() === (b||'').trim().toLowerCase()
+}
 
 type Rider   = { nb:string; name:string; city:string; phone:string; email:string; active:boolean; weeklyHours:number; cancellations:number }
 type Shift   = { id:string; city:string; date:string; day:string; start:string; end:string; hours:number; capacity:number; booked:number; status:string; notes:string }
@@ -176,11 +181,11 @@ export default function AdminPortal() {
   // City-filtered data
   const applyCity = (arr: any[], key='city') => cityFilter ? arr.filter((x:any)=>x[key]===cityFilter) : arr
 
-  const filteredRiders   = useMemo(()=>riders.filter(r=>(!cityFilter||r.city===cityFilter)&&(!search||r.name.toLowerCase().includes(search.toLowerCase())||r.nb.toLowerCase().includes(search.toLowerCase()))), [riders,cityFilter,search])
-  const filteredShifts   = useMemo(()=>shifts.filter(s=>(!cityFilter||s.city===cityFilter)&&(!search||s.id.toLowerCase().includes(search.toLowerCase())||(s.notes||'').toLowerCase().includes(search.toLowerCase())||s.date.includes(search))), [shifts,cityFilter,search])
+  const filteredRiders   = useMemo(()=>riders.filter(r=>(!cityFilter||cityEq(r.city,cityFilter))&&(!search||r.name.toLowerCase().includes(search.toLowerCase())||r.nb.toLowerCase().includes(search.toLowerCase()))), [riders,cityFilter,search])
+  const filteredShifts   = useMemo(()=>shifts.filter(s=>(!cityFilter||(s.city||'').trim().toLowerCase()===cityFilter.trim().toLowerCase())&&(!search||s.id.toLowerCase().includes(search.toLowerCase())||(s.notes||'').toLowerCase().includes(search.toLowerCase())||s.date.includes(search))), [shifts,cityFilter,search])
   const filteredBookings = useMemo(()=>bookings.filter(b=>{
     const r=riders.find(x=>x.nb===b.riderNb)
-    const matchCity=!cityFilter||b.city===cityFilter
+    const matchCity=!cityFilter||cityEq(b.city,cityFilter)
     const matchSearch=!search||(r?.name||'').toLowerCase().includes(search.toLowerCase())||(b.riderNb||'').toLowerCase().includes(search.toLowerCase())||(b.riderName||'').toLowerCase().includes(search.toLowerCase())||(b.shiftId||'').toLowerCase().includes(search.toLowerCase())||(b.shiftDate||'').includes(search)
     return matchCity&&matchSearch&&(!bookingFilter||b.status===bookingFilter)
   }), [bookings,riders,cityFilter,search,bookingFilter])
@@ -193,9 +198,9 @@ export default function AdminPortal() {
   const cityStats = useMemo(()=>{
     const todayISO = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
     return CITIES.map(city=>{
-      const cRiders   = riders.filter(r=>r.city===city)
-      const cShifts   = shifts.filter(s=>s.city===city)
-      const cBookings = bookings.filter(b=>b.city===city)
+      const cRiders   = riders.filter(r=>cityEq(r.city,city))
+      const cShifts   = shifts.filter(s=>cityEq(s.city,city))
+      const cBookings = bookings.filter(b=>cityEq(b.city,city))
       const cap       = cShifts.reduce((a,s)=>a+s.capacity,0)
       const bkd       = cShifts.reduce((a,s)=>a+s.booked,0)
       const upcoming  = cShifts.filter(s => toISO(s.date) >= todayISO)
@@ -699,7 +704,7 @@ export default function AdminPortal() {
         {/* ══ HOURS ════════════════════════════════════════ */}
         {page==='hours' && (() => {
           const map: Record<string,{nb:string;name:string;city:string;confirmedHours:number;totalBookings:number;cancelledCount:number}>={}
-          bookings.filter(b=>!cityFilter||b.city===cityFilter).forEach(b=>{
+          bookings.filter(b=>!cityFilter||cityEq(b.city,cityFilter)).forEach(b=>{
             if (!map[b.riderNb]) {
               const r=riders.find(x=>x.nb===b.riderNb)
               map[b.riderNb]={nb:b.riderNb,name:b.riderName||r?.name||b.riderNb,city:b.city||r?.city||'',confirmedHours:0,totalBookings:0,cancelledCount:0}

@@ -43,6 +43,15 @@ function getAuth() {
 }
 function sheetsClient() { return google.sheets({ version: 'v4', auth: getAuth() }) }
 
+// Returns the exact tab (sheet) names as Google Sheets has them, character
+// for character. Used by /api/debug-sheets to catch invisible mismatches
+// (trailing space, smart-quote, different casing) that an exact-match range
+// lookup like 'Berlin Shifts'!A2:K would otherwise fail on silently.
+export async function listActualTabNames(): Promise<string[]> {
+  const res = await sheetsClient().spreadsheets.get({ spreadsheetId: SHEET_ID })
+  return (res.data.sheets || []).map(s => s.properties?.title || '').filter(Boolean)
+}
+
 // ═══════════════════════════════════════════════════════════
 // DATE / TIME HELPERS
 // ═══════════════════════════════════════════════════════════
@@ -336,9 +345,44 @@ function parseShiftRow(r: string[], city: string, tabName: string, rowIndex: num
   }
 }
 
-// Read one city tab — tries primary name then fallbacks. Returns [] if none work.
+// Cache of the real spreadsheet tab names, refreshed once per cold start.
+// Normalizing here means a tab named "Berlin Shifts " (trailing space) or
+// "berlin shifts" still resolves correctly instead of silently returning
+// zero rows from an exact-match range lookup.
+let _tabNameCache: string[] | null = null
+async function getRealTabNames(): Promise<string[]> {
+  if (_tabNameCache) return _tabNameCache
+  _tabNameCache = await listActualTabNames()
+  console.log(`[getRealTabNames] Actual sheet tabs: ${_tabNameCache.map(n => `"${n}"`).join(', ')}`)
+  return _tabNameCache
+}
+function normalizeTabName(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+// Read one city tab — resolves the real tab name via normalized matching
+// against actual spreadsheet metadata, so whitespace/case drift can never
+// silently produce zero shifts. Falls back to the configured fallback list
+// only if no normalized match exists at all (e.g. tab renamed entirely).
 async function readCityTab(tabName: string, city: string): Promise<ShiftRow[]> {
-  const namesToTry = [tabName, ...(CITY_TAB_FALLBACKS[city] || [])]
+  let resolvedName = tabName
+  try {
+    const realTabs = await getRealTabNames()
+    const target = normalizeTabName(tabName)
+    const match = realTabs.find(t => normalizeTabName(t) === target)
+    if (match) {
+      resolvedName = match
+      if (match !== tabName) {
+        console.log(`[readCityTab] "${city}": configured name "${tabName}" resolved to actual tab "${match}" (whitespace/case difference)`)
+      }
+    } else {
+      console.warn(`[readCityTab] "${city}": no tab matching "${tabName}" found among actual tabs: ${realTabs.map(t=>`"${t}"`).join(', ')}`)
+    }
+  } catch (e: any) {
+    console.warn(`[readCityTab] Could not fetch spreadsheet metadata to resolve tab names: ${e.message}`)
+  }
+
+  const namesToTry = [resolvedName, tabName, ...(CITY_TAB_FALLBACKS[city] || [])]
   for (const name of namesToTry) {
     try {
       const res = await sheetsClient().spreadsheets.values.get({
